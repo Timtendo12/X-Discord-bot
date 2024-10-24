@@ -1,7 +1,17 @@
 const { PrismaClient } = require("@prisma/client");
 const { Rettiwt } = require("rettiwt-api");
-const { users, tweetPolling, adminUser } = require("../config.json");
-const { EmbedBuilder } = require("discord.js");
+const {
+  users,
+  tweetPollingStart,
+  tweetPollingEnd,
+  tweetPollingDebug,
+  adminUser,
+  proxyUrl,
+} = require("../config.json");
+const {
+  EmbedBuilder,
+  shouldUseGlobalFetchAndWebSocket,
+} = require("discord.js");
 
 const _prisma = new PrismaClient();
 let _rettiwt = null;
@@ -10,6 +20,7 @@ let _lastId = null;
 let _lastDate = null;
 
 let _interval = null;
+let _timer = null;
 
 const vm = {
   name: "XService",
@@ -62,6 +73,15 @@ const vm = {
 
       return embeds;
     },
+    generateNewPollingInterval() {
+      let x = Math.floor(
+        Math.random() * (tweetPollingEnd - tweetPollingStart) +
+          tweetPollingStart,
+      );
+      // round it to the nearest second
+      x = Math.round(x / 1000) * 1000;
+      return x;
+    },
     validateInfo(token, channel) {
       if (!token) {
         console.error(
@@ -98,6 +118,12 @@ const vm = {
           .search(filter)
           .catch((err) => console.error(err));
 
+        if (!cursor) {
+          return new Error(
+            "No cursor returned from search. Is the token valid?",
+          );
+        }
+
         const tweets = cursor.list;
         if (!tweets || tweets.length === 0) {
           _lastDate = new Date();
@@ -120,6 +146,12 @@ const vm = {
         throw e;
       }
     },
+    getTimeLeft() {
+      return _timer;
+    },
+    getPreviousIntervalDate() {
+      return _lastDate;
+    },
     async sendErrorToAdmin(bot, error) {
       // send a message to the admin user with the error and stack trace
       const admin = await bot.users.fetch(adminUser);
@@ -133,42 +165,72 @@ const vm = {
       return;
     }
 
-    const token = await this.methods.getActiveToken();
-    const channel = await this.methods.getChannel(bot);
+    let token = await this.methods.getActiveToken();
+    let channel = await this.methods.getChannel(bot);
 
     if (!this.methods.validateInfo(token, channel)) {
       console.error("Invalid token or channel information.");
       return;
     }
 
-    _rettiwt = new Rettiwt({ apiKey: token.token });
+    const config = { apiKey: token.token, logging: true };
+    if (proxyUrl && proxyUrl.length > 0) {
+      config.proxyUrl = proxyUrl;
+      console.log(`Using proxy URL: ${proxyUrl}`);
+    }
 
     try {
       console.log("Starting to listen to tweets...");
-      const polling = tweetPolling;
+      _interval = vm.methods.generateNewPollingInterval();
 
       const debugInterval = true;
-      const checkInterval = 5000;
 
       while (true) {
-        let timer = polling;
+        _timer = _interval;
 
-        // Start a loop to count down the timer
-        while (timer > 0) {
+        if (tweetPollingDebug) {
+          _timer = tweetPollingDebug;
+        }
+
+        // Start a loop to count down the _timer
+        while (_timer > 0) {
           // Log remaining time every 5 seconds
-          if (timer % checkInterval === 0 && debugInterval) {
+          if (_timer % 5000 === 0 && debugInterval) {
             console.log(
-              `Polling in ${timer / 1000} seconds... ${_lastDate} / ${_lastId}`,
+              `Polling in ${_timer / 1000} seconds... ${_lastDate} / ${_lastId}`,
             );
           }
 
           // Wait for 1 second
           await new Promise((resolve) => setTimeout(resolve, 1000));
-          timer -= 1000; // Decrease timer by 1 second
+          _timer -= 1000; // Decrease _timer by 1 second
         }
 
-        // After timer reaches 0, execute the search
+        const newToken = await vm.methods.getActiveToken();
+        const newChannel = await vm.methods.getChannel(bot);
+
+        if (
+          newToken.token !== token.token ||
+          newChannel.channel_id !== channel.channel_id
+        ) {
+          console.log("Token or channel has changed.");
+          if (this.methods.validateInfo(newToken, newChannel)) {
+            config.apiKey = newToken.token;
+            channel = newChannel;
+          } else {
+            console.error(
+              "Invalid new token or channel information, reverting to old token and channel.",
+            );
+          }
+        }
+
+        _rettiwt = new Rettiwt(config);
+
+        // After _timer reaches 0, execute the search
         console.log("Polling for tweets...");
+
+        _interval = vm.methods.generateNewPollingInterval();
+
         await this.methods
           .search({ fromUsers: users, replies: false }, channel)
           .catch((err) => {

@@ -5,3 +5,4 @@ node_modules
 prisma/sts.db
 tweetobject.example.json
 config.json
+.DS_Store

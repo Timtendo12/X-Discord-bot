@@ -4,4 +4,5 @@
   "adminUser": "",
   "ownerUser": "",
   "tweetPolling": 60000
+  "proxyUrl": ""
 }
